@@ -90,8 +90,10 @@ final class QwertyPinyinEngine {
         // 首拼索引要扫整本词库，只在全拼切不完整时才去查，
         // 这样正常打 nihao 这种全拼不会每次按键都背一遍索引构建的开销。
         let needAbbr = !pending.isEmpty || full.isEmpty
+        // 首拼候选多给一些（候选条能横滑），跨拼音串合并后排序会比较杂，
+        // 常见的词不一定排最前，多留几条才翻得到。
         let abbr = needAbbr
-            ? QwertyPinyinEngine.abbreviationCandidates(letters, table: table, limit: 8)
+            ? QwertyPinyinEngine.abbreviationCandidates(letters, table: table, limit: 12)
             : []
 
         if pending.isEmpty {
@@ -257,8 +259,9 @@ final class QwertyPinyinEngine {
             }
             guard !list.isEmpty else { continue }
             list.sort { $0.bucket > $1.bucket }
+            // 同一个拼音串最多贡献 3 个词，免得某个拼音把整个首字母组合占满
             var existing = index[abbr] ?? []
-            existing.append(contentsOf: list.prefix(4))
+            existing.append(contentsOf: list.prefix(3))
             index[abbr] = existing
         }
         for (key, value) in index {
