@@ -74,7 +74,23 @@ jobs:
             Keyboard/GoutouAIClient.swift \
             tools/NineKeyCheck/main.swift \
             -o "$RUNNER_TEMP/ninekeycheck"
+      - name: Smoke test qwerty pinyin logic
+        run: |
+          swiftc -swift-version 5 \
+            Keyboard/GoutouPinyinTable.swift \
+            Keyboard/QwertyPinyinEngine.swift \
+            tools/QwertyPinyinCheck/main.swift \
+            -o "$RUNNER_TEMP/qwertypinyincheck"
+          "$RUNNER_TEMP/qwertypinyincheck"
           "$RUNNER_TEMP/ninekeycheck"
+      - name: Smoke test qwerty pinyin logic
+        run: |
+          swiftc -swift-version 5 \
+            Keyboard/GoutouPinyinTable.swift \
+            Keyboard/QwertyPinyinEngine.swift \
+            tools/QwertyPinyinCheck/main.swift \
+            -o "$RUNNER_TEMP/qwertypinyincheck"
+          "$RUNNER_TEMP/qwertypinyincheck"
 
       # 剪贴板契约（两端共用）+ 版式解析 + 长图分片几何：纯 Foundation，不用模拟器就能验。
       - name: Smoke test chat clipboard codec and layout parser
