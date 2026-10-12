@@ -82,6 +82,20 @@ engine.input("nihao1")
 expectEqual(engine.letters, "nihao", "数字不会被吃进拼音")
 engine.clear()
 
+// 首拼（简拼）：nh → 你好
+engine.input("nh")
+expect(!engine.candidates.isEmpty, "nh 能出首拼候选（首选 \(engine.candidates.first ?? "无")）")
+expect(engine.candidates.contains("你好"), "nh 的首拼候选里有「你好」")
+engine.clear()
+
+// 单字母不该捞整本词库
+expect(QwertyPinyinEngine.abbreviationCandidates("n", table: table).isEmpty, "单字母不查首拼")
+
+// 全拼能切完整时不必去扫索引，结果也不该被首拼挤掉
+engine.input("nihao")
+expect(engine.candidates.contains("你好"), "nihao 的候选里仍有「你好」")
+engine.clear()
+
 print("")
 print(failures == 0 ? "26 键拼音：全部通过（\(checks) 项）" : "26 键拼音：\(failures) 项失败（共 \(checks) 项）")
 exit(failures == 0 ? 0 : 1)
