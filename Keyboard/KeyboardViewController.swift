@@ -15,8 +15,13 @@ final class KeyboardViewController: UIInputViewController {
     private let englishKeyHeight: CGFloat = 46
     private let englishSpacing: CGFloat = 6
     private let englishHeight: CGFloat = 216
+    private let englishCandidateStripHeight: CGFloat = 40
 
     private var englishPage: EnglishPage = .letters
+    /// 26 键的中文拼音开关：开着时字母进拼音引擎出候选，关着时和原来一样直接上屏。
+    private var qwertyChinese: Bool = true
+    private let qwertyEngine = QwertyPinyinEngine()
+    private static let qwertyChineseKey = "goutou.keyboard.qwertychinese"
     private var shiftOn = false
 
     private let englishLetterRows: [[String]] = [
@@ -93,6 +98,9 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         let stored = UserDefaults.standard.string(forKey: KeyboardViewController.modeStorageKey)
         mode = Mode(rawValue: stored ?? "") ?? .chineseNineKey
+        if UserDefaults.standard.object(forKey: KeyboardViewController.qwertyChineseKey) != nil {
+            qwertyChinese = UserDefaults.standard.bool(forKey: KeyboardViewController.qwertyChineseKey)
+        }
         skillText = KeyboardViewController.loadSkillText()
         // 词库 400KB 左右，提前读进来，别等到第一次按键时卡一下。
         GoutouPinyinTable.shared.loadIfNeeded()
@@ -166,6 +174,10 @@ final class KeyboardViewController: UIInputViewController {
             root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
         ])
 
+        if qwertyChinese, englishPage == .letters {
+            root.addArrangedSubview(makeEnglishCandidateStrip())
+        }
+
         switch englishPage {
         case .letters:
             root.addArrangedSubview(makeEnglishRow(englishLetterRows[0], letters: true))
@@ -185,7 +197,11 @@ final class KeyboardViewController: UIInputViewController {
         root.addArrangedSubview(makeEnglishBottomRow())
 
         // 键盘高度写死（和 iOS 自带键盘一致，横屏不做特殊处理）。
-        let height = view.heightAnchor.constraint(equalToConstant: englishHeight)
+        let showsStrip = qwertyChinese && englishPage == .letters
+        let targetHeight = showsStrip
+            ? englishHeight + englishCandidateStripHeight + englishSpacing
+            : englishHeight
+        let height = view.heightAnchor.constraint(equalToConstant: targetHeight)
         height.priority = UILayoutPriority(999)
         height.isActive = true
     }
@@ -303,6 +319,13 @@ final class KeyboardViewController: UIInputViewController {
             row.addArrangedSubview(globe)
         }
 
+        // 「拼」= 26 键拼音开着（点它切回纯英文），「英」= 关着
+        row.addArrangedSubview(makeEnglishKey(
+            title: qwertyChinese ? "拼" : "英",
+            action: #selector(handleToggleQwertyChinese),
+            fontSize: 16,
+            background: GoutouTheme.englishFunctionKey
+        ))
         row.addArrangedSubview(makeEnglishKey(
             title: "中",
             action: #selector(handleSwitchToChinese),
@@ -319,9 +342,91 @@ final class KeyboardViewController: UIInputViewController {
 
         var weights: [CGFloat] = [1.5]
         if needsInputModeSwitchKey { weights.append(1.5) }
-        weights.append(contentsOf: [1.5, 5, 1.5])
+        weights.append(contentsOf: [1.5, 1.5, 5, 1.5])
         applyWeights(row, weights: weights)
         return row
+    }
+
+    /// 26 键拼音的候选条：左边是已输入的拼音，右边是可点的候选词。
+    private func makeEnglishCandidateStrip() -> UIView {
+        let container = UIView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.heightAnchor.constraint(equalToConstant: englishCandidateStripHeight).isActive = true
+
+        let hintLabel = UILabel()
+        hintLabel.translatesAutoresizingMaskIntoConstraints = false
+        hintLabel.font = UIFont.systemFont(ofSize: 13)
+        hintLabel.textColor = .secondaryLabel
+        hintLabel.text = qwertyEngine.isComposing ? qwertyEngine.hint : "拼音"
+        hintLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        container.addSubview(hintLabel)
+
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.showsHorizontalScrollIndicator = false
+        container.addSubview(scroll)
+
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.spacing = 10
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            hintLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
+            hintLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            hintLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 130),
+
+            scroll.leadingAnchor.constraint(equalTo: hintLabel.trailingAnchor, constant: 8),
+            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
+            scroll.topAnchor.constraint(equalTo: container.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            stack.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.heightAnchor),
+        ])
+
+        let items = qwertyEngine.candidates
+        if items.isEmpty {
+            let placeholder = UILabel()
+            placeholder.font = UIFont.systemFont(ofSize: 13)
+            placeholder.textColor = .tertiaryLabel
+            placeholder.text = qwertyEngine.isComposing ? "（没有候选）" : ""
+            stack.addArrangedSubview(placeholder)
+        } else {
+            for (index, word) in items.enumerated() {
+                let button = UIButton(type: .system)
+                button.tag = index
+                button.setTitle(word, for: .normal)
+                button.titleLabel?.font = UIFont.systemFont(ofSize: index == 0 ? 18 : 16)
+                button.addTarget(self, action: #selector(handleEnglishCandidate(_:)), for: .touchUpInside)
+                stack.addArrangedSubview(button)
+            }
+        }
+        return container
+    }
+
+    @objc private func handleEnglishCandidate(_ sender: UIButton) {
+        guard let word = qwertyEngine.commitCandidate(at: sender.tag) else { return }
+        textDocumentProxy.insertText(word)
+        buildLayout()
+    }
+
+    /// 组字状态下要切走（换页 / 换模式）之前，先把拼音原样上屏，别把输入弄丢。
+    private func flushQwerty() {
+        guard qwertyEngine.isComposing else { return }
+        textDocumentProxy.insertText(qwertyEngine.takeLetters())
+    }
+
+    @objc private func handleToggleQwertyChinese() {
+        flushQwerty()
+        qwertyChinese.toggle()
+        UserDefaults.standard.set(qwertyChinese, forKey: KeyboardViewController.qwertyChineseKey)
+        buildLayout()
     }
 
     /// 按行内权重把宽度分下去（用一个 layout guide 扣掉间距，避免和 spacing 打架）。
@@ -374,6 +479,16 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func handleLetter(_ sender: UIButton) {
         guard let text = sender.title(for: .normal) else { return }
+        if qwertyChinese {
+            // 26 键拼音：字母进引擎出候选，不直接上屏
+            qwertyEngine.input(text)
+            if shiftOn {
+                // 和系统键盘一样：大写只作用一个字母
+                shiftOn = false
+            }
+            buildLayout()
+            return
+        }
         textDocumentProxy.insertText(text)
         if shiftOn {
             // 和系统键盘一样：大写只作用一个字母
@@ -382,10 +497,12 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// 数字页 / 符号页的字符键：按下就上屏。
+    /// 数字页 / 符号页的字符键：按下就上屏（有组字内容先把拼音落下去）。
     @objc private func handleLiteral(_ sender: UIButton) {
         guard let text = sender.title(for: .normal) else { return }
+        flushQwerty()
         textDocumentProxy.insertText(text)
+        buildLayout()
     }
 
     @objc private func handleShift() {
@@ -395,26 +512,41 @@ final class KeyboardViewController: UIInputViewController {
 
     /// 字母页的「123」/ 数字页的「ABC」：字母页 ↔ 数字页。
     @objc private func handleToggleEnglishPage() {
+        flushQwerty()
         englishPage = englishPage == .letters ? .numbers : .letters
         buildLayout()
     }
 
     /// 数字页的「#+=」/ 符号页的「123」：数字页 ↔ 符号页。
     @objc private func handleSwitchEnglishPage() {
+        flushQwerty()
         englishPage = englishPage == .numbers ? .symbols : .numbers
         buildLayout()
     }
 
+    /// 组字时空格 = 上屏首选候选（没有候选就把拼音原样打出来）。
     @objc private func handleSpace() {
-        textDocumentProxy.insertText(" ")
+        guard qwertyEngine.isComposing else {
+            textDocumentProxy.insertText(" ")
+            return
+        }
+        textDocumentProxy.insertText(qwertyEngine.primaryCandidate ?? qwertyEngine.takeLetters())
+        buildLayout()
     }
 
+    /// 组字时先删拼音字母，拼音删完了才删正文。
     @objc private func handleDelete() {
-        textDocumentProxy.deleteBackward()
+        guard qwertyEngine.deleteBackward() else {
+            textDocumentProxy.deleteBackward()
+            return
+        }
+        buildLayout()
     }
 
     @objc private func handleReturn() {
+        flushQwerty()
         textDocumentProxy.insertText("\n")
+        buildLayout()
     }
 
     @objc private func handleNextKeyboard() {
@@ -1039,6 +1171,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func handleSwitchToChinese() {
+        flushQwerty()
         switchToMode(.chineseNineKey)
     }
 }
