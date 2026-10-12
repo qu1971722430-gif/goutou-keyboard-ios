@@ -15,8 +15,6 @@ final class KeyboardViewController: UIInputViewController {
     private let englishKeyHeight: CGFloat = 46
     private let englishSpacing: CGFloat = 6
     private let englishCandidateStripHeight: CGFloat = 40
-    /// 顶部组字条（拼音提示 + 清空 + 🐶 军师），高度跟九键的 compositionHeight 对齐。
-    private let englishCompositionHeight: CGFloat = 30
 
     private var englishPage: EnglishPage = .letters
     /// 26 键布局的高度约束，留着引用好在布局阶段兜底校正（系统偶尔不采纳首次设置的高度）。
@@ -190,10 +188,8 @@ final class KeyboardViewController: UIInputViewController {
             root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
         ])
 
-        // 顶部那条常驻（和九键的组字条一样）：左边显示拼音，右边是「清空」和 🐶 军师。
-        let composition = makeEnglishCompositionStrip()
-        root.addArrangedSubview(composition)
-
+        // 不再单独摆一条拼音提示（用户反馈挡视线、键盘太高），
+        // 军师入口和「清空」都收进候选条右侧。
         var strip: UIView?
         if qwertyChinese, englishPage == .letters {
             strip = makeEnglishCandidateStrip()
@@ -219,22 +215,22 @@ final class KeyboardViewController: UIInputViewController {
         }
         root.addArrangedSubview(makeEnglishBottomRow())
 
-        // 空间万一不够，先压字母行，别把组字条和候选条压没。
+        // 空间万一不够，先压字母行，别把候选条压没。
         for sub in root.arrangedSubviews {
-            if sub === composition { continue }
             if let strip = strip, sub === strip { continue }
             sub.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         }
 
-        // 键盘高度按内容精确算：上下 8 + 组字条 + 4 行键（每行间隙另算），有候选条再加一条。
+        // 键盘高度按内容精确算：上下 8 + 4 行键，有候选条再加一条（间隙另算）。
         // 之前这里算少了 2pt，Auto Layout 冲突时优先牺牲了候选条，导致它显示不出来。
         let rowCount: CGFloat = 4
-        var targetHeight = 16 + rowCount * englishKeyHeight + englishCompositionHeight
+        var targetHeight = 16 + rowCount * englishKeyHeight
         if strip != nil {
-            // 组字条 + 候选条 + 4 行键 = 6 个子视图 → 5 个间隙
-            targetHeight += englishCandidateStripHeight + (rowCount + 1) * englishSpacing
+            // 候选条 + 4 行键 = 5 个子视图 → 4 个间隙
+            targetHeight += englishCandidateStripHeight + rowCount * englishSpacing
         } else {
-            targetHeight += rowCount * englishSpacing
+            // 只有 4 行键 → 3 个间隙
+            targetHeight += (rowCount - 1) * englishSpacing
         }
         // 军师面板正开着：键区先藏起来，别和面板叠在一起。
         if isPanelVisible { root.isHidden = true }
@@ -387,72 +383,6 @@ final class KeyboardViewController: UIInputViewController {
         return row
     }
 
-    /// 26 键顶部那条：和九键的组字条对齐——左边显示拼音路径，右边「清空」+ 🐶 军师入口。
-    private func makeEnglishCompositionStrip() -> UIView {
-        let container = UIView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        let stripHeight = container.heightAnchor.constraint(equalToConstant: englishCompositionHeight)
-        stripHeight.priority = UILayoutPriority(999)
-        stripHeight.isActive = true
-        container.setContentCompressionResistancePriority(.required, for: .vertical)
-
-        let hint = UILabel()
-        hint.translatesAutoresizingMaskIntoConstraints = false
-        hint.font = .systemFont(ofSize: 14)
-        hint.textColor = .secondaryLabel
-        hint.lineBreakMode = .byTruncatingTail
-        if englishPage == .letters {
-            hint.text = qwertyChinese
-                ? (qwertyEngine.isComposing ? qwertyEngine.hint : "拼音")
-                : "英文"
-        } else {
-            hint.text = englishPage == .numbers ? "数字" : "符号"
-        }
-        container.addSubview(hint)
-
-        // 军师入口用狗头图标，和九键顶栏那个一致。
-        let mentor = UIButton(type: .system)
-        mentor.translatesAutoresizingMaskIntoConstraints = false
-        mentor.setTitle("🐶", for: .normal)
-        mentor.titleLabel?.font = .systemFont(ofSize: 16)
-        mentor.backgroundColor = GoutouTheme.brand
-        mentor.layer.cornerRadius = 6
-        mentor.tintColor = .white
-        mentor.accessibilityLabel = "打开狗头军师面板"
-        mentor.addTarget(self, action: #selector(handleOpenMentor), for: .touchUpInside)
-        container.addSubview(mentor)
-
-        NSLayoutConstraint.activate([
-            hint.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
-            hint.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-
-            mentor.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            mentor.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            mentor.widthAnchor.constraint(equalToConstant: 64),
-            mentor.heightAnchor.constraint(equalToConstant: 26),
-        ])
-
-        // 正在拼拼音时才给「清空」（对标九键的「重输」键），不拼的时候不占地方。
-        if qwertyChinese, qwertyEngine.isComposing {
-            let clear = UIButton(type: .system)
-            clear.translatesAutoresizingMaskIntoConstraints = false
-            clear.setTitle("清空", for: .normal)
-            clear.titleLabel?.font = .systemFont(ofSize: 13)
-            clear.accessibilityLabel = "清空正在拼的拼音"
-            clear.addTarget(self, action: #selector(handleClearComposition), for: .touchUpInside)
-            container.addSubview(clear)
-            NSLayoutConstraint.activate([
-                clear.trailingAnchor.constraint(equalTo: mentor.leadingAnchor, constant: -8),
-                clear.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-                clear.widthAnchor.constraint(equalToConstant: 44),
-                hint.trailingAnchor.constraint(lessThanOrEqualTo: clear.leadingAnchor, constant: -8),
-            ])
-        } else {
-            hint.trailingAnchor.constraint(lessThanOrEqualTo: mentor.leadingAnchor, constant: -8).isActive = true
-        }
-        return container
-    }
-
     /// 顶栏 🐶：把正在拼的拼音先落下去，再切到军师面板（和九键 openMentor 一致）。
     @objc private func handleOpenMentor() {
         flushQwerty()
@@ -477,7 +407,7 @@ final class KeyboardViewController: UIInputViewController {
         // 候选条不能被压扁：它的抗压缩优先级拉到最高。
         container.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        // 拼音提示已经挪到上面那条组字条了（和九键一致），这条只放候选词。
+        // 这条只放候选词 + 右侧功能键，不再单独摆拼音提示（用户反馈挡视线）。
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.showsHorizontalScrollIndicator = false
@@ -490,9 +420,49 @@ final class KeyboardViewController: UIInputViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
 
+        // 右侧：军师入口常驻；正在拼拼音时再冒出「清空」（对标九键的「重输」）。
+        let mentor = UIButton(type: .system)
+        mentor.translatesAutoresizingMaskIntoConstraints = false
+        mentor.setTitle("🐶", for: .normal)
+        mentor.titleLabel?.font = .systemFont(ofSize: 16)
+        mentor.backgroundColor = GoutouTheme.brand
+        mentor.layer.cornerRadius = 6
+        mentor.accessibilityLabel = "打开狗头军师面板"
+        mentor.addTarget(self, action: #selector(handleOpenMentor), for: .touchUpInside)
+        container.addSubview(mentor)
+
+        var clear: UIButton?
+        if qwertyEngine.isComposing {
+            let button = UIButton(type: .system)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.setTitle("清空", for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 13)
+            button.accessibilityLabel = "清空正在拼的拼音"
+            button.addTarget(self, action: #selector(handleClearComposition), for: .touchUpInside)
+            container.addSubview(button)
+            clear = button
+        }
+
+        NSLayoutConstraint.activate([
+            mentor.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            mentor.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            mentor.widthAnchor.constraint(equalToConstant: 52),
+            mentor.heightAnchor.constraint(equalToConstant: 32),
+        ])
+
+        var leftOfMentor = mentor.leadingAnchor
+        if let clear = clear {
+            NSLayoutConstraint.activate([
+                clear.trailingAnchor.constraint(equalTo: mentor.leadingAnchor, constant: -6),
+                clear.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                clear.widthAnchor.constraint(equalToConstant: 40),
+            ])
+            leftOfMentor = clear.leadingAnchor
+        }
+
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
-            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
+            scroll.trailingAnchor.constraint(equalTo: leftOfMentor, constant: -6),
             scroll.topAnchor.constraint(equalTo: container.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
