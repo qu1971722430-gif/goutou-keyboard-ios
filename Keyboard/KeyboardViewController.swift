@@ -15,6 +15,8 @@ final class KeyboardViewController: UIInputViewController {
     private let englishKeyHeight: CGFloat = 46
     private let englishSpacing: CGFloat = 6
     private let englishCandidateStripHeight: CGFloat = 40
+    /// 顶部组字条（拼音提示 + 清空 + 🐶 军师），高度跟九键的 compositionHeight 对齐。
+    private let englishCompositionHeight: CGFloat = 30
 
     private var englishPage: EnglishPage = .letters
     /// 26 键布局的高度约束，留着引用好在布局阶段兜底校正（系统偶尔不采纳首次设置的高度）。
@@ -39,6 +41,17 @@ final class KeyboardViewController: UIInputViewController {
         ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "·"],
     ]
     private let englishPunctuationRow = [".", ",", "?", "!", "'"]
+
+    /// 中文模式下（26 键拼音开着）的数字页 / 符号页：换成中文标点，和九键那两套保持一致。
+    private let chineseNumberRows: [[String]] = [
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+        ["，", "。", "？", "！", "、", "；", "：", "…", "@", "#"],
+    ]
+    private let chineseSymbolRows: [[String]] = [
+        ["「", "」", "《", "》", "～", "—", "￥", "%", "*", "&"],
+        ["（", "）", "【", "】", "·", "￣", "€", "£", "¥", "/"],
+    ]
+    private let chinesePunctuationRow = ["，", "。", "？", "！", "、"]
 
     // MARK: - 布局模式（新增）
 
@@ -160,6 +173,8 @@ final class KeyboardViewController: UIInputViewController {
         for constraint in view.constraints {
             view.removeConstraint(constraint)
         }
+        // 面板也被一起移掉了，引用清掉，需要时再建（和 rebuildKeyboard 一个套路）。
+        mentorPanel = nil
         view.backgroundColor = GoutouTheme.englishBackground
 
         let root = UIStackView()
@@ -175,6 +190,10 @@ final class KeyboardViewController: UIInputViewController {
             root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
         ])
 
+        // 顶部那条常驻（和九键的组字条一样）：左边显示拼音，右边是「清空」和 🐶 军师。
+        let composition = makeEnglishCompositionStrip()
+        root.addArrangedSubview(composition)
+
         var strip: UIView?
         if qwertyChinese, englishPage == .letters {
             strip = makeEnglishCandidateStrip()
@@ -187,29 +206,39 @@ final class KeyboardViewController: UIInputViewController {
             root.addArrangedSubview(makeEnglishRow(englishLetterRows[1], letters: true))
             root.addArrangedSubview(makeEnglishLetterBottomKeysRow())
         case .numbers:
-            for row in englishNumberRows {
+            // 中文模式下数字页带中文标点，标题也跟九键一样叫「符」。
+            for row in (qwertyChinese ? chineseNumberRows : englishNumberRows) {
                 root.addArrangedSubview(makeEnglishRow(row, letters: false))
             }
-            root.addArrangedSubview(makeEnglishPunctuationKeysRow(backTitle: "#+="))
+            root.addArrangedSubview(makeEnglishPunctuationKeysRow(backTitle: qwertyChinese ? "符" : "#+="))
         case .symbols:
-            for row in englishSymbolRows {
+            for row in (qwertyChinese ? chineseSymbolRows : englishSymbolRows) {
                 root.addArrangedSubview(makeEnglishRow(row, letters: false))
             }
             root.addArrangedSubview(makeEnglishPunctuationKeysRow(backTitle: "123"))
         }
         root.addArrangedSubview(makeEnglishBottomRow())
 
-        // 空间万一不够，先压字母行，别把候选条压没。
+        // 空间万一不够，先压字母行，别把组字条和候选条压没。
         for sub in root.arrangedSubviews {
+            if sub === composition { continue }
             if let strip = strip, sub === strip { continue }
             sub.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         }
 
-        // 键盘高度按内容精确算（上下 8 + 4 行键 + 行间距，有候选条再加一条）。
+        // 键盘高度按内容精确算：上下 8 + 组字条 + 4 行键（每行间隙另算），有候选条再加一条。
         // 之前这里算少了 2pt，Auto Layout 冲突时优先牺牲了候选条，导致它显示不出来。
         let rowCount: CGFloat = 4
-        var targetHeight = 16 + rowCount * englishKeyHeight + rowCount * englishSpacing
-        if strip != nil { targetHeight += englishCandidateStripHeight + englishSpacing }
+        var targetHeight = 16 + rowCount * englishKeyHeight + englishCompositionHeight
+        if strip != nil {
+            // 组字条 + 候选条 + 4 行键 = 6 个子视图 → 5 个间隙
+            targetHeight += englishCandidateStripHeight + (rowCount + 1) * englishSpacing
+        } else {
+            targetHeight += rowCount * englishSpacing
+        }
+        // 军师面板正开着：键区先藏起来，别和面板叠在一起。
+        if isPanelVisible { root.isHidden = true }
+
         let height = view.heightAnchor.constraint(equalToConstant: targetHeight)
         height.priority = UILayoutPriority(999)
         height.isActive = true
@@ -267,7 +296,7 @@ final class KeyboardViewController: UIInputViewController {
         return row
     }
 
-    /// 数字/符号页第三行：#+= 或 123 + 标点 + ⌫
+    /// 数字/符号页第三行：#+=（中文模式叫「符」）或 123 + 标点 + ⌫
     private func makeEnglishPunctuationKeysRow(backTitle: String) -> UIStackView {
         let row = UIStackView()
         row.axis = .horizontal
@@ -284,7 +313,8 @@ final class KeyboardViewController: UIInputViewController {
         back.accessibilityLabel = backTitle == "123" ? "回到数字页" : "切换到更多符号"
         row.addArrangedSubview(back)
 
-        for key in englishPunctuationRow {
+        let punctuationRow = qwertyChinese ? chinesePunctuationRow : englishPunctuationRow
+        for key in punctuationRow {
             row.addArrangedSubview(makeEnglishKey(title: key, action: #selector(handleLiteral(_:))))
         }
 
@@ -296,7 +326,7 @@ final class KeyboardViewController: UIInputViewController {
         delete.accessibilityLabel = "删除"
         row.addArrangedSubview(delete)
 
-        applyWeights(row, weights: [1.5] + Array(repeating: 1, count: englishPunctuationRow.count) + [1.5])
+        applyWeights(row, weights: [1.5] + Array(repeating: 1, count: punctuationRow.count) + [1.5])
         return row
     }
 
@@ -357,6 +387,86 @@ final class KeyboardViewController: UIInputViewController {
         return row
     }
 
+    /// 26 键顶部那条：和九键的组字条对齐——左边显示拼音路径，右边「清空」+ 🐶 军师入口。
+    private func makeEnglishCompositionStrip() -> UIView {
+        let container = UIView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        let stripHeight = container.heightAnchor.constraint(equalToConstant: englishCompositionHeight)
+        stripHeight.priority = UILayoutPriority(999)
+        stripHeight.isActive = true
+        container.setContentCompressionResistancePriority(.required, for: .vertical)
+
+        let hint = UILabel()
+        hint.translatesAutoresizingMaskIntoConstraints = false
+        hint.font = .systemFont(ofSize: 14)
+        hint.textColor = .secondaryLabel
+        hint.lineBreakMode = .byTruncatingTail
+        if englishPage == .letters {
+            hint.text = qwertyChinese
+                ? (qwertyEngine.isComposing ? qwertyEngine.hint : "拼音")
+                : "英文"
+        } else {
+            hint.text = englishPage == .numbers ? "数字" : "符号"
+        }
+        container.addSubview(hint)
+
+        // 军师入口用狗头图标，和九键顶栏那个一致。
+        let mentor = UIButton(type: .system)
+        mentor.translatesAutoresizingMaskIntoConstraints = false
+        mentor.setTitle("🐶", for: .normal)
+        mentor.titleLabel?.font = .systemFont(ofSize: 16)
+        mentor.backgroundColor = GoutouTheme.brand
+        mentor.layer.cornerRadius = 6
+        mentor.tintColor = .white
+        mentor.accessibilityLabel = "打开狗头军师面板"
+        mentor.addTarget(self, action: #selector(handleOpenMentor), for: .touchUpInside)
+        container.addSubview(mentor)
+
+        NSLayoutConstraint.activate([
+            hint.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
+            hint.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+
+            mentor.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            mentor.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            mentor.widthAnchor.constraint(equalToConstant: 64),
+            mentor.heightAnchor.constraint(equalToConstant: 26),
+        ])
+
+        // 正在拼拼音时才给「清空」（对标九键的「重输」键），不拼的时候不占地方。
+        if qwertyChinese, qwertyEngine.isComposing {
+            let clear = UIButton(type: .system)
+            clear.translatesAutoresizingMaskIntoConstraints = false
+            clear.setTitle("清空", for: .normal)
+            clear.titleLabel?.font = .systemFont(ofSize: 13)
+            clear.accessibilityLabel = "清空正在拼的拼音"
+            clear.addTarget(self, action: #selector(handleClearComposition), for: .touchUpInside)
+            container.addSubview(clear)
+            NSLayoutConstraint.activate([
+                clear.trailingAnchor.constraint(equalTo: mentor.leadingAnchor, constant: -8),
+                clear.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                clear.widthAnchor.constraint(equalToConstant: 44),
+                hint.trailingAnchor.constraint(lessThanOrEqualTo: clear.leadingAnchor, constant: -8),
+            ])
+        } else {
+            hint.trailingAnchor.constraint(lessThanOrEqualTo: mentor.leadingAnchor, constant: -8).isActive = true
+        }
+        return container
+    }
+
+    /// 顶栏 🐶：把正在拼的拼音先落下去，再切到军师面板（和九键 openMentor 一致）。
+    @objc private func handleOpenMentor() {
+        flushQwerty()
+        isPanelVisible = true
+        buildLayout()
+        showMentorPanel()
+    }
+
+    /// 对标九键的「重输」：整段拼音作废重来。
+    @objc private func handleClearComposition() {
+        qwertyEngine.clear()
+        buildLayout()
+    }
+
     /// 26 键拼音的候选条：左边是已输入的拼音，右边是可点的候选词。
     private func makeEnglishCandidateStrip() -> UIView {
         let container = UIView()
@@ -367,14 +477,7 @@ final class KeyboardViewController: UIInputViewController {
         // 候选条不能被压扁：它的抗压缩优先级拉到最高。
         container.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        let hintLabel = UILabel()
-        hintLabel.translatesAutoresizingMaskIntoConstraints = false
-        hintLabel.font = UIFont.systemFont(ofSize: 13)
-        hintLabel.textColor = .secondaryLabel
-        hintLabel.text = qwertyEngine.isComposing ? qwertyEngine.hint : "拼音"
-        hintLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        container.addSubview(hintLabel)
-
+        // 拼音提示已经挪到上面那条组字条了（和九键一致），这条只放候选词。
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.showsHorizontalScrollIndicator = false
@@ -388,11 +491,7 @@ final class KeyboardViewController: UIInputViewController {
         scroll.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            hintLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
-            hintLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            hintLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 130),
-
-            scroll.leadingAnchor.constraint(equalTo: hintLabel.trailingAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
             scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
             scroll.topAnchor.constraint(equalTo: container.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -611,6 +710,21 @@ final class KeyboardViewController: UIInputViewController {
     private func showMentorPanel() {
         isPanelVisible = true
         nineKeyView?.isHidden = true
+        // 26 键布局下 buildNineKeyLayout 没跑过，面板得按需建一次，否则点 🐶 没反应。
+        if mentorPanel == nil {
+            let panel = GoutouPanelView()
+            panel.delegate = self
+            panel.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(panel)
+            NSLayoutConstraint.activate([
+                panel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                panel.topAnchor.constraint(equalTo: view.topAnchor),
+                panel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            mentorPanel = panel
+        }
+        view.bringSubviewToFront(mentorPanel!)
         mentorPanel?.isHidden = false
         mentorPanel?.resetScreen()
         // FINAL：狗头入口事件自动读取并采用最新的合法聊天。
@@ -648,6 +762,8 @@ final class KeyboardViewController: UIInputViewController {
         mentorPanel?.isHidden = true
         nineKeyView?.isHidden = false
         refreshNineKeyView()
+        // 26 键布局要自己重建一次，把键盘重新铺回来。
+        if mode == .englishQWERTY { buildLayout() }
     }
 
     /// 换人物时把记忆管理页的状态清干净，免得看到上一个人的筛选结果
