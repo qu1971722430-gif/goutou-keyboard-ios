@@ -86,8 +86,33 @@ final class QwertyPinyinEngine {
             }
         }
 
-        candidates = QwertyPinyinEngine.candidates(for: found, table: table, limit: 12)
+        let full = QwertyPinyinEngine.candidates(for: found, table: table, limit: 12)
+        // 首拼索引要扫整本词库，只在全拼切不完整时才去查，
+        // 这样正常打 nihao 这种全拼不会每次按键都背一遍索引构建的开销。
+        let needAbbr = !pending.isEmpty || full.isEmpty
+        let abbr = needAbbr
+            ? QwertyPinyinEngine.abbreviationCandidates(letters, table: table, limit: 8)
+            : []
+
+        if pending.isEmpty {
+            // 整串能切成音节：全拼优先，首拼补在后面
+            candidates = QwertyPinyinEngine.merge(primary: full, secondary: abbr, limit: 14)
+        } else {
+            // 切不完整（典型就是打首拼 nh / wm）：首拼结果排前面
+            candidates = QwertyPinyinEngine.merge(primary: abbr, secondary: full, limit: 14)
+        }
         hint = QwertyPinyinEngine.hintText(letters: letters, splits: found, pending: pending)
+    }
+
+    /// 把两组候选拼起来，去重后截断（primary 在前）。
+    private static func merge(primary: [String], secondary: [String], limit: Int) -> [String] {
+        var result = primary
+        var seen = Set(result)
+        for word in secondary where result.count < limit && !seen.contains(word) {
+            seen.insert(word)
+            result.append(word)
+        }
+        return Array(result.prefix(limit))
     }
 
     /// 字母串切成所有可能的音节组合（最多 maxResults 种）。
@@ -191,6 +216,63 @@ final class QwertyPinyinEngine {
             add(poolChars)
         }
         return result
+    }
+
+    // MARK: - 首拼（简拼）
+
+    /// 首拼索引：`nh` → 你好、`wm` → 我们。懒构建一次，之后每次按键只查字典。
+    private static var abbreviationIndex: [String: [(bucket: Int, word: String)]]?
+    private static var abbreviationIndexBuilt = false
+
+    /// 首拼候选。只在输入 ≥2 个字母时才查，避免单字母就把整本词库捞一遍。
+    static func abbreviationCandidates(
+        _ letters: String,
+        table: GoutouPinyinTable,
+        limit: Int = 8
+    ) -> [String] {
+        guard letters.count >= 2, letters.count <= 8 else { return [] }
+        table.loadIfNeeded()
+        if !abbreviationIndexBuilt {
+            abbreviationIndex = buildAbbreviationIndex(table)
+            abbreviationIndexBuilt = true
+        }
+        guard let list = abbreviationIndex?[letters] else { return [] }
+        return Array(list.prefix(limit).map(\.word))
+    }
+
+    /// 遍历整本词库，把每个拼音串切成音节取首字母，做成 `首字母串 → 词` 的反查表。
+    private static func buildAbbreviationIndex(
+        _ table: GoutouPinyinTable
+    ) -> [String: [(bucket: Int, word: String)]] {
+        var index: [String: [(bucket: Int, word: String)]] = [:]
+        for (pinyin, tokens) in table.wordsByPinyin {
+            // 只认两个音节以上的词：单音节的首拼就是它自己，没有简的意义
+            guard let abbr = abbreviation(of: pinyin, table: table), abbr.count >= 2 else { continue }
+            var list: [(bucket: Int, word: String)] = []
+            var seen = Set<String>()
+            for token in tokens {
+                guard let decoded = GoutouPinyinTable.decode(token), !seen.contains(decoded.word) else { continue }
+                seen.insert(decoded.word)
+                list.append(decoded)
+            }
+            guard !list.isEmpty else { continue }
+            list.sort { $0.bucket > $1.bucket }
+            var existing = index[abbr] ?? []
+            existing.append(contentsOf: list.prefix(4))
+            index[abbr] = existing
+        }
+        for (key, value) in index {
+            index[key] = value.sorted { $0.bucket > $1.bucket }
+        }
+        return index
+    }
+
+    /// 拼音串 → 首字母串：`nihao` → `nh`、`zhongguo` → `zg`。
+    private static func abbreviation(of pinyin: String, table: GoutouPinyinTable) -> String? {
+        guard let first = splitLetters(pinyin, syllableSet: table.syllableSet, maxResults: 1).first,
+              !first.isEmpty
+        else { return nil }
+        return first.map { String($0.prefix(1)) }.joined()
     }
 
     /// 顶部那一行：`64426 · ni'hao` 的 26 键版本（显示字母 + 切出来的拼音）。
