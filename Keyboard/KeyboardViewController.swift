@@ -14,10 +14,11 @@ final class KeyboardViewController: UIInputViewController {
 
     private let englishKeyHeight: CGFloat = 46
     private let englishSpacing: CGFloat = 6
-    private let englishHeight: CGFloat = 216
     private let englishCandidateStripHeight: CGFloat = 40
 
     private var englishPage: EnglishPage = .letters
+    /// 26 键布局的高度约束，留着引用好在布局阶段兜底校正（系统偶尔不采纳首次设置的高度）。
+    private var keyboardHeightConstraint: NSLayoutConstraint?
     /// 26 键的中文拼音开关：开着时字母进拼音引擎出候选，关着时和原来一样直接上屏。
     private var qwertyChinese: Bool = true
     private let qwertyEngine = QwertyPinyinEngine()
@@ -174,8 +175,10 @@ final class KeyboardViewController: UIInputViewController {
             root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
         ])
 
+        var strip: UIView?
         if qwertyChinese, englishPage == .letters {
-            root.addArrangedSubview(makeEnglishCandidateStrip())
+            strip = makeEnglishCandidateStrip()
+            root.addArrangedSubview(strip!)
         }
 
         switch englishPage {
@@ -196,14 +199,21 @@ final class KeyboardViewController: UIInputViewController {
         }
         root.addArrangedSubview(makeEnglishBottomRow())
 
-        // 键盘高度写死（和 iOS 自带键盘一致，横屏不做特殊处理）。
-        let showsStrip = qwertyChinese && englishPage == .letters
-        let targetHeight = showsStrip
-            ? englishHeight + englishCandidateStripHeight + englishSpacing
-            : englishHeight
+        // 空间万一不够，先压字母行，别把候选条压没。
+        for sub in root.arrangedSubviews {
+            if let strip = strip, sub === strip { continue }
+            sub.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        }
+
+        // 键盘高度按内容精确算（上下 8 + 4 行键 + 行间距，有候选条再加一条）。
+        // 之前这里算少了 2pt，Auto Layout 冲突时优先牺牲了候选条，导致它显示不出来。
+        let rowCount: CGFloat = 4
+        var targetHeight = 16 + rowCount * englishKeyHeight + rowCount * englishSpacing
+        if strip != nil { targetHeight += englishCandidateStripHeight + englishSpacing }
         let height = view.heightAnchor.constraint(equalToConstant: targetHeight)
         height.priority = UILayoutPriority(999)
         height.isActive = true
+        keyboardHeightConstraint = height
     }
 
     /// 一行键：按权重分宽度（权重和不要求等于 1，内部按比例算）。
@@ -351,7 +361,11 @@ final class KeyboardViewController: UIInputViewController {
     private func makeEnglishCandidateStrip() -> UIView {
         let container = UIView()
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(equalToConstant: englishCandidateStripHeight).isActive = true
+        let stripHeight = container.heightAnchor.constraint(equalToConstant: englishCandidateStripHeight)
+        stripHeight.priority = UILayoutPriority(999)
+        stripHeight.isActive = true
+        // 候选条不能被压扁：它的抗压缩优先级拉到最高。
+        container.setContentCompressionResistancePriority(.required, for: .vertical)
 
         let hintLabel = UILabel()
         hintLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -471,7 +485,11 @@ final class KeyboardViewController: UIInputViewController {
         key.layer.shadowRadius = 0
         key.layer.shadowOffset = CGSize(width: 0, height: 1)
         key.addTarget(self, action: action, for: .touchUpInside)
-        key.heightAnchor.constraint(equalToConstant: englishKeyHeight).isActive = true
+        // 优先级降到 999：空间不够时允许把键压矮一点，
+        // 否则会和候选条的固定高度打架，Auto Layout 一冲突就把候选条压没了。
+        let keyHeight = key.heightAnchor.constraint(equalToConstant: englishKeyHeight)
+        keyHeight.priority = UILayoutPriority(999)
+        keyHeight.isActive = true
         return key
     }
 
@@ -607,6 +625,16 @@ final class KeyboardViewController: UIInputViewController {
         guard isPanelVisible else { return }
         checkForSharedChatUpdate()
         refreshPanel()
+    }
+
+    /// 兜底：键盘扩展的高度约束有时在首次布局时不被系统采纳（结果就是候选条被压没），
+    /// 这里在布局阶段核对一次，差得明显就直接把高度写回去。
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let expected = keyboardHeightConstraint?.constant else { return }
+        if abs(view.bounds.height - expected) > 1 {
+            view.frame.size.height = expected
+        }
     }
 
     private func hideMentorPanel() {
